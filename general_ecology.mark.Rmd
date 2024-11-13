@@ -62,7 +62,9 @@ theme_set(theme_classic())
 #setwd("~/Documents/Postdoc/Microbiome course Belgrade 2024/Second day")
 
 # Load the cured phyloseq object:
-ps <- readRDS("MPS.16S.triads.mod2.RDS")
+ps <- readRDS("MPS.16S.triads.mod.RDS")
+
+# For the initial part we will only compare baseline MetSyn samples with the associated Donors.
 ps_2 <- prune_samples(ps@sam_data$Sample_Type!="PostFMT", ps)
 ```
 
@@ -577,7 +579,7 @@ ancom2[["res"]]$diff_abn$taxon [ancom2[["res"]]$diff_abn$Sample_Type==TRUE]
 ps_2_RA <- transform_sample_counts(ps_2, function(x) x/sum(x) * 100)
 
 # Relative abundance Enterococcaceae family:
-ps_2_Streptococcaceae = subset_taxa(ps_2_RA, Family == "Streptococcaceae")
+ps_2_Streptococcaceae = subset_taxa(microbiome::aggregate_taxa(ps_2_RA, "Family"), Family == "Streptococcaceae")
 plot_abundance = function(physeq,title = "",Facet = "Family", Color = "Family"){
  mphyseq = psmelt(physeq)
 mphyseq <- subset(mphyseq, Abundance > -1)
@@ -607,7 +609,7 @@ ancom3 = ancombc(data = ps_2, assay_name = "counts",
 ancom3[["res"]]$diff_abn$taxon [ancom3[["res"]]$diff_abn$Sample_Type==TRUE]
 
 # Relative abundance Enterococcus genus:
-ps_2_Mitsuokella = subset_taxa(ps_2_RA, Genus == "Mitsuokella")
+ps_2_Mitsuokella = subset_taxa(microbiome::aggregate_taxa(ps_2_RA, "Genus"), Genus == "Mitsuokella")
 plot_abundance = function(physeq,title = "",Facet = "Genus", Color = "Genus"){
  mphyseq = psmelt(physeq)
 mphyseq <- subset(mphyseq, Abundance > -1)
@@ -623,20 +625,20 @@ mphyseq <- subset(mphyseq, Abundance > -1)
 plot_abundance(ps_2_Mitsuokella,"") 
 
 # Relative abundance Enterococcus genus:
-ps_2_Atopobium = subset_taxa(ps_2_RA, Genus == "Shuttleworthia")
+ps_2_Atopobium = subset_taxa(microbiome::aggregate_taxa(ps_2_RA, "Genus"),  Genus == "Shuttleworthia")
 plot_abundance(ps_2_Atopobium,"") 
 
 # Relative abundance Enterococcus genus:
-ps_2_Tyzzerella_4 = subset_taxa(ps_2_RA, Genus == "Sellimonas")
-plot_abundance(ps_2_Tyzzerella_4,"") 
+ps_2_Sellimonas = subset_taxa(microbiome::aggregate_taxa(ps_2_RA, "Genus"), Genus == "Sellimonas")
+plot_abundance(ps_2_Sellimonas,"") 
 
 # Relative abundance Enterococcus genus:
-ps_2_Peptostreptococcus = subset_taxa(ps_2_RA, Genus == "Fournierella")
-plot_abundance(ps_2_Peptostreptococcus,"") 
+ps_2_Fournierella = subset_taxa(microbiome::aggregate_taxa(ps_2_RA, "Genus"), Genus == "Fournierella")
+plot_abundance(ps_2_Fournierella,"") 
 
 # Relative abundance Enterococcus genus:
-ps_2_Lactonifactor = subset_taxa(ps_2_RA, Genus == "Ruminococcaceae_UCG-008")
-plot_abundance(ps_2_Lactonifactor,"") 
+ps_2_Ruminococcaceae_UCG = subset_taxa(microbiome::aggregate_taxa(ps_2_RA, "Genus"), Genus == "Ruminococcaceae_UCG-008")
+plot_abundance(ps_2_Ruminococcaceae_UCG,"") 
 ```
 
 # Repeated Measures
@@ -799,7 +801,23 @@ ggplot(df, aes(x=Donor_match, y=value)) +
   NULL
 ```
 
-# Including clinical outcomes
+# Functional analysis
+
+The data was also enriched with functional profiles obtained with picrust2.
+Can you apply the previous examples to identify features that discriminate between MetSyn and Healthy Donors?
 
 ```{r}
+ps.picrust <- readRDS("MPS.16S.triads.picrust.RDS")
 ```
+
+# Including clinical outcomes
+
+One of the main objectives of the study was to find associations with clinical outcome.
+This outcome the the rate of glucose disappearance, which is the gold standard for glucose homeostatis. The Rd values pre and post are included in the object. Subjects are classified as responders if the had at least a 10% increase in there Rd.
+
+```{r}
+ps@sam_data[,c("Rd","Rd_post","Rd_responder")]
+```
+
+Can you use the previously used functions and examples to explore the association between the microbiome and Rd?
+
