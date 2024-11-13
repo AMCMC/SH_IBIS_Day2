@@ -1,0 +1,805 @@
+---
+title: "Second day_General ecology"
+author: "Amir"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 2
+    number_sections: yes
+    theme: united
+  pdf_document:
+    toc: yes
+    toc_depth: '2'
+---
+
+```{r setup, include=FALSE}
+# setting global options for the rmd markdown
+knitr::opts_chunk$set(echo = T) # include chunck code
+knitr::opts_chunk$set(cache = F) # use chuck results from cache if not modified (speed)
+knitr::opts_chunk$set(warning = F)
+knitr::opts_chunk$set(message = F)
+knitr::opts_chunk$set(fig.width = 12)
+```
+
+# install all required packages, including their dependencies
+
+Remove **"#"** in the below code chunk if you want to run it
+
+```{r}
+#install.packages(c("phyloseq", "ggplot2", "microbiome", "dplyr", "plyr", 
+#                   "ggpubr", "vegan", "plotly", "ANCOMBC", "tibble", 
+#                   "knitr", "viridis", "lmerTest"))
+```
+
+
+# Load the libraries and cured phyloseq object
+
+```{r}
+# Cleaning the global environment:
+rm(list=ls())
+
+# Loading libraries:
+library(phyloseq)
+library(ggplot2)
+library(microbiome)
+library(dplyr)
+library(plyr)
+library(ggpubr)
+library(vegan)
+library(plotly)
+library(ggpubr)
+library(plotly)
+library(ANCOMBC)
+library(tibble)
+library(lmerTest)
+library(tidyverse)
+library(mixOmics)
+
+theme_set(theme_classic())
+
+# Setting the working directory:
+#setwd("~/Documents/Postdoc/Microbiome course Belgrade 2024/Second day")
+
+# Load the cured phyloseq object:
+ps <- readRDS("MPS.16S.triads.mod2.RDS")
+ps_2 <- prune_samples(ps@sam_data$Sample_Type!="PostFMT", ps)
+```
+
+***Important:*** **ps_2** is a curated and normalized phyloseq object which was created in the previous step.
+
+Taxonomy levels:  
+
+- Domain (Domains)  
+- Kingdom (Kingdoms)  
+- Phylum (Phyla)  
+- Class (Classes)  
+- Order (Orders)  
+- Family (Families)  
+- Genus (Genera)  
+- Species (Species)  
+
+```{r}
+# Summary of basic information of phyloseq object:
+summarize_phyloseq(ps_2)
+colnames(tax_table(ps_2))
+
+# How many family/phyla/genera are there in the phylosec object?
+table(tax_table(ps_2)[, "Phylum"], exclude = NULL) 
+sort(table(tax_table(ps_2)[, "Phylum"], exclude = NULL), decreasing = TRUE)
+
+# How many unique family/phyla/genera does this data set have?
+length(unique(tax_table(ps_2)[, "Phylum"]))
+
+# 15 or 14???
+```
+
+# Filtering steps  
+
+- contamination/s  
+- prevalence  
+- certain family/phyla/genera  
+- certain group/s (treatment or placebo)  
+
+```{r, fig.width=18, fig.height=10}
+# Excluding the Phylum=NA:
+ps_3 <- subset_taxa(ps_2, !is.na(Phylum))
+sum(is.na(ps_3@tax_table[,"Phylum"])==T)
+table(ps_3@tax_table[,"Phylum"],  useNA = "ifany")
+
+prevdf = apply(X = otu_table(ps_3), MARGIN = ifelse(taxa_are_rows(ps_3), yes = 1, no = 2), FUN = function(x){sum(x > 0)})
+
+# Add taxonomy and total read counts to this data.frame
+prevdf <- data.frame(Prevalence = prevdf, TotalAbundance = taxa_sums(ps_3), tax_table(ps_3))
+
+plyr::ddply(prevdf, "Phylum", function(df1){cbind(mean(df1$Prevalence),sum(df1$Prevalence))})
+
+# Subset to the remaining phyla
+prevdf1 = subset(prevdf, Phylum %in% get_taxa_unique(ps_3, "Phylum"))
+
+# Visualization:
+ggplot(prevdf1, aes(TotalAbundance, Prevalence / nsamples(ps_3),color=Phylum)) +
+  # Include a guess for parameter
+  geom_hline(yintercept = 0.05, alpha = 0.5, linetype = 2) +
+  geom_point(size = 2, alpha = 0.7) + scale_color_viridis_d(option = "plasma") +
+  scale_x_log10() +  xlab("Total Abundance") + ylab("Prevalence [Frac. Samples]") +
+  facet_wrap(~Phylum) + theme(legend.position="none")
+
+# Filtering based on the prevalence:
+prevalenceThreshold = 0.05 * nsamples(ps_3) ###### considers taxa present in at last 5% of all samples
+prevalenceThreshold
+keepTaxa = rownames(prevdf)[(prevdf$Prevalence >= prevalenceThreshold)]
+ps_4 = prune_taxa(keepTaxa, ps_3)
+
+# Use phyloseq's built-in functions for filtering:
+ps_5 <- filter_taxa(ps_3, function(x) sum(x > 0) >= (0.05 * nsamples(ps_3)), prune = TRUE)
+
+# ps_4 = ps_5, it keeps only taxa that appear in at least 5% of all samples.
+ntaxa(ps_3)
+ntaxa(ps_4)
+ntaxa(ps_5)
+
+# filter based on a certain certain family/phyla/genera:
+ps_3_firmicutes <- subset_taxa(ps_3, Phylum == "Firmicutes")
+
+# filter based on certain group/s (males for example)
+ps_3_males <- subset_samples(ps_3, Host_Sex == "Male")
+```
+
+# Bar plots and Heatmaps
+
+```{r}
+plot_bar(ps_4,fill="Phylum") + 
+  theme(legend.position="bottom") + 
+  theme(axis.title.x=element_blank(),  axis.text.x=element_blank()) 
+```
+
+For a better visualization we can normalize the libraries so that every sample has similar (relative) abundances (range between 0 and 1).
+there are multiple ways to transform data and get relative abundances:
+
+- **phyloseq function**
+
+```{r}
+ps_4_RA <- transform_sample_counts(ps_4, function(x) 100 * x/sum(x)) 
+```
+
+- **microbiome function**
+
+```{r}
+ps_4_RA <- microbiome::transform(ps_4,"compositional")
+```
+
+plot of relative abundances:
+
+```{r, fig.width=18, fig.height=10}
+plot_bar(ps_4_RA,fill='Phylum') + 
+  theme(legend.position="bottom") + 
+  theme(axis.title.x=element_blank(),  axis.text.x=element_blank()) 
+
+# group by Sample_Type:
+plot_bar(ps_4_RA,fill="Phylum") + 
+  theme(legend.position="bottom") + 
+  theme(axis.title.x=element_blank(),  axis.text.x=element_blank()) +
+  facet_grid(~Sample_Type, scales="free_x")
+
+# Average per group:
+phylumGlommed = tax_glom(ps_4_RA, "Phylum") 
+
+plot_composition(phylumGlommed, average_by = "Sample_Type", transform = "compositional") 
+# Does the labeling/legend match with with the phyla names?
+# to find the related phylum names:
+tax_table(phylumGlommed)
+
+# changing the labels in the legend:
+colnames(phylumGlommed@otu_table) <- phylumGlommed@tax_table[,2]
+
+# plot again:
+plot_composition(phylumGlommed, average_by = "Sample_Type", transform = "compositional", legend = phylanames) 
+```
+
+Now let's only look at "Firmicutes" phyla:
+
+```{r, fig.width=18, fig.height=10}
+# subset the Firmicutes phyla:
+ps_3_Firmicutes = subset_taxa(ps_3, Phylum== "Firmicutes")
+
+# plot_abundance function:
+plot_abundance = function(physeq,title = "",Facet = "Family", Color = "Family"){
+ mphyseq = psmelt(physeq)
+mphyseq <- subset(mphyseq, Abundance > 0)
+  ggplot(data = mphyseq, mapping = aes_string(x = "Sample_Type",y = "Abundance",
+                                              color = Color, fill = Color)) +
+    geom_violin(fill = NA) +
+    geom_point(size = 1, alpha = 0.3,
+               position = position_jitter(width = 0.3)) +
+    facet_wrap(facets = Facet) + scale_y_log10()+
+    theme(legend.position="none")
+}
+
+# look at each family in Firmicutes phyla:
+plot_abundance(ps_3_Firmicutes,"") 
+
+# how if we want to look at a specific family like "Lachnospiraceae":
+ps_3_Lachnospiraceae = subset_taxa(ps_2, Family == "Lachnospiraceae")
+
+plot_abundance = function(physeq,title = "",Facet = "Genus", Color = "Genus"){
+ mphyseq = psmelt(physeq)
+mphyseq <- subset(mphyseq, Abundance > 0)
+ggplot(data = mphyseq, mapping = aes_string(x = "Sample_Type",y = "Abundance",
+color = Color, fill = Color)) + geom_violin(fill = NA) + geom_point(size = 1, alpha = 0.3,position = position_jitter(width = 0.3)) +  facet_wrap(facets = Facet) + scale_y_log10()+ theme(legend.position="none") }
+
+plot_abundance(ps_3_Lachnospiraceae,"") 
+```
+
+# Normalization
+
+A much debated topic in microbiome data analysis is how to account for uneven sampling depth.
+Differences in sampling depth introduce a bias which needs to be accounted for.
+For instance, considering alpha diversity you could expect a strong correlation between observed species and sampling depth. One approach would be to subsample, (rarefy the data) in such a way that all samples would have equal sampling depth. However, some consider this bad [practice](https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1003531) as data is thrown away. Another issue is the loss of samples when a threshold higher than the actual sampling depth is set. If data is not normalized on the count table, sampling depth needs to be accounted for in the statistical test. 
+
+Others however have shown that not subsampling your data still results in [bias](https://journals.asm.org/doi/10.1128/msphere.00355-23). In the end one needs to consider the trade off between reporting of a false significant association (Type 1 error) driven by a potential sampling bias, or missing significant associations (Type 2 error) because of reduced statistical power that comes from data sub sampling and sample drop out. 
+
+Since statistical analysis are complex enough as it is, we prefer to err on the side of caution and recommend sub sampling the data prior to any analysis unless study design integrity is compromised. Here we proceed with normalization by a single step sub sampling of the data since we believe Type 1 errors are worse than Type 2. 
+
+** What would be an appropriate sampling depth for this dataset? **
+
+```{r}
+sample_sums(ps_2) %>% sort()
+```
+
+```{r}
+ps_2 <- rarefy_even_depth(ps_2, sample.size = 20000,  rngseed = 211202)
+```
+
+# Alpha Diversity
+
+There are different functions from different packages (phyloseq, vegan, microbiome) to calculate alpha diversity  
+Here we use microbiome package:  
+
+```{r}
+# check if any ASVs/taxa are not present in any of the samples
+any(taxa_sums(ps_2)==0) 
+
+# prune dataset for taxa that are not present in any of the samples
+# ps_2 <- prune_taxa(taxa_sums(ps_2)>0, ps_2)
+
+# check how many ASVs/taxa are kept
+ntaxa(ps_2)
+
+# check the taxonomic rank information
+rank_names(ps_2)
+
+# check samples with low sequencing depth <1000
+sample_sums(ps_2) < 1000
+range(sample_sums(ps_2))
+
+# remove samples with low sequencing depth: (we do not have it here)
+#ps_2 <- subset_samples(ps_2, sample_sums(ps_2) >1000)
+
+# from microbiome package you can calculate all alpha diversity indexes or specific ones:
+#ps_2_alpha <- microbiome::alpha(ps_2, index = "observed")
+ps_2_alpha <- microbiome::alpha(ps_2, index = "all")
+str(ps_2_alpha)
+
+# extract metadata from phyloseq object (ps_2)
+ps_2_meta <- meta(ps_2)
+class(ps_2_meta)
+
+# merge the alpha diversity indexe/s with metadata (which is now a data frame)
+rownames(ps_2_alpha) == rownames(ps_2_meta)
+merged_df <- cbind(ps_2_meta,ps_2_alpha)
+#colnames(merged_df)
+
+# Shannon:
+p1 <- ggviolin(merged_df, x = "Sample_Type", y = "diversity_shannon",
+               add = "boxplot", fill = "Sample_Type")
+print(p1)
+
+# looking at the distribution of the variable to choose the best test for comparing:
+summary(merged_df$diversity_shannon)
+hist(merged_df$diversity_shannon)
+ggqqplot(merged_df$diversity_shannon)
+shapiro.test(merged_df$diversity_shannon)
+
+# is diversity_shannon (Shannon index) following a normal distribution or not?
+# if normal: parametric tests are recommended
+t.test(merged_df$diversity_shannon~Sample_Type,data=merged_df, var.equal = T)
+var.test(merged_df$diversity_shannon~Sample_Type,data=merged_df)
+
+# if not normal: non-parametric tests are recommended
+wilcox.test(diversity_shannon ~ Sample_Type, data = merged_df, paired = FALSE)
+
+# Univariable and multivariate alpha-diversity comparisson:
+# Unadjusted:
+Shannon_model1 <- lm(merged_df$diversity_shannon~merged_df$Sample_Type)
+summary(Shannon_model1)
+
+# Adjusted: Let's say we want to adjust for Age ("Age") and sex ("Host_Sex"):
+Shannon_model2 <- lm(merged_df$diversity_shannon ~ merged_df$Sample_Type +
+                       merged_df$Host_Sex + merged_df$Age)
+summary(Shannon_model2)
+
+# Richness (Observed taxa)
+p2 <- ggviolin(merged_df, x = "Sample_Type", y = "observed",
+               add = "boxplot", fill = "Sample_Type")
+print(p2)
+
+# looking at the distribution of the variable to choose the best test for comparing:
+summary(merged_df$observed)
+hist(merged_df$observed)
+ggqqplot(merged_df$observed)
+shapiro.test(merged_df$observed)
+
+# is Richness (Observed taxa) following a normal distribution or not?
+# if normal: parametric tests are recommended
+t.test(merged_df$observed~Sample_Type,data=merged_df, var.equal = T)
+var.test(merged_df$observed~Sample_Type,data=merged_df)
+
+# if not normal: non-parametric tests are recommended
+wilcox.test(observed ~ Sample_Type, data = merged_df, paired = FALSE)
+
+# Univariable and multivariate alpha-diversity comparisson:
+# Unadjusted:
+Richness_model1 <- lm(merged_df$observed~merged_df$Sample_Type)
+summary(Shannon_model1)
+
+# Adjusted: Let's say we want to adjust for Age ("Age") and sex ("Host_Sex"):
+Richness_model2 <- lm(merged_df$observed ~ merged_df$Sample_Type +
+                       merged_df$Age + merged_df$Host_Sex)
+summary(Shannon_model2)
+```
+
+So based on the results there is no significant difference between the two groups
+(Rd increased versus decreased) in alpha diversity using Richness and Shannon index  
+
+**Note: Many papers are also using Chao1 index to determine richness levels. However, some of us consider this metric [inappropriate](https://youtu.be/EwvMh4JcCWI?t=268) for (amplicon) sequence data as it tends to extrapolate sequencing error rather than true richness. 
+
+# Beta diversity
+
+Beta diversity describes the variation in species composition between samples, often expressed as the "distance" or "dissimilarity" between them. The choice of distance metric depends on the context and goals of the analysis, as different metrics capture different aspects of community composition.
+
+For example, Bray-Curtis and Jaccard distances treat each species or feature as a distinct unit, without considering relationships between species. These metrics only focus on shared presence or abundance between samples. In contrast, UniFrac distances account for the evolutionary relationships (phylogeny) between species. With UniFrac, samples with phylogenetically distinct species show higher distances than samples with species that are different but closely related. This makes UniFrac especially valuable when genetic or evolutionary relatedness is meaningful in the analysis.
+
+Another key distinction is whether the distance metric considers feature abundance. Some methods are weighted (e.g., weighted UniFrac and Bray-Curtis), which incorporate the relative abundance of species in the calculation. Others are unweighted (e.g., Jaccard and unweighted UniFrac), which treat species as simply present or absent. Weighted metrics capture differences in both composition and abundance, while unweighted metrics focus solely on the presence or absence of species, providing a simpler, binary view of beta diversity.
+
+Most common distance metrics used are:
+
+**bray**: Bray-Curtis
+
+**unifrac**: unweighted UniFrac distance
+
+**wunifrac**: weighted-UniFrac distance
+
+**dpcoa**: sample-wise distance used in Double Principle Coordinate Analysis
+
+**jsd**: Jensen-Shannon Divergence
+
+The obtained distance matrices are used both for visualization and statistical testing.
+
+## Ordination
+
+In a static plot on a screen, we are typically limited to only two dimensions (x and y), which constrains our ability to visualize high-dimensional data. Ordination is a set of methods designed to reduce the dimensionality of complex datasets for the purpose of visualization, simplification, and interpretation. By reducing data from multiple dimensions to just two or three, ordination enables researchers to visualize and interpret underlying patterns, trends, or gradients that would otherwise be difficult to discern.
+
+Ordination seeks to simplify the data by finding new dimensions, often called axes, components, or factors, that capture the greatest amount of variance (i.e., variation or information) in the dataset. The first axis is chosen to capture as much variance as possible in the data, and subsequent axes capture the remaining variance, each being orthogonal (or perpendicular) to the previous ones. This orthogonality ensures that each axis is independent and does not overlap in the information it represents. Through this process, high-dimensional relationships are projected into a lower-dimensional space in a way that retains as much of the original data's structure as possible.
+
+To achieve maximum variance on each axis, ordination techniques often involve mathematical transformations that "rotate" the data in its original multidimensional space. This rotation aligns the data along new axes that maximize distinct sources of variation, making it easier to identify meaningful ecological gradients or patterns.
+
+A simple example of ordination is a 3d plot. While 3 dimensions can be viewed, the actual image is a projection in 2D. 
+
+```{r}
+p <- plot_ly(data = ps_2@otu_table@.Data %>% data.frame(), 
+             x = ~ASVX_1, y = ~ASVX_2, z = ~ASVX_3, 
+             color = ~ASVX_1,
+             type = "scatter3d", 
+             mode = "markers")
+p
+```
+
+
+For performing the ordination we use ordinate() function in phyloseq which does both distance calculation and the ordination:  Different ordination Constrained and unconstrained methods are available.
+
+1- ***method*** (Optional). A character string. Default is "DCA".
+
+Currently supported method options are: **c("DCA", "CCA", "RDA", "CAP", "DPCoA", "NMDS", "MDS", "PCoA")**
+
+**DCA**: Performs detrended correspondence analysis usingdecorana
+
+**CCA**: Performs correspondence analysis, or optionally, constrained correspondence analysis (a.k.a. canonical correspondence analysis), via cca
+
+**RDA**: Performs redundancy analysis, if no contrainsts are given a principal components analysis is performed, via rda
+
+**CAP**: [Partial] Constrained Analysis of Principal Coordinates or distance-based RDA, via capscale. See capscale.phyloseq for more details. In particular, a formula argument must be provided.
+
+**DPCoA**: Performs Double Principle Coordinate Analysis using a (corrected, if necessary) phylogenetic/patristic distance between species. The calculation is performed by DPCoA(), which ultimately uses dpcoa after making the appropriate accessions/corrections of the data.
+
+**NMDS**: Performs Non-metric MultiDimenstional Scaling of a sample-wise ecological distance matrix onto a user-specified number of axes, k. By default, k=2, but this can be modified as a supplementary argument. This method is ultimately carried out by metaMDS after the appropriate accessions and distance calculations. Because metaMDS includes its own distance calculation wrappers to vegdist, and these provide additional functionality in the form of species scores, ordinate will pass-on the distance argument to metaMDS if it is among the supported vegdist methods. However, all distance methods supported by distance are supported here, including "unifrac" (the default) and "DPCoA".
+
+**MDS/PCoA**: Performs principal coordinate analysis (also called principle coordinate decomposition, multidimensional scaling (MDS), or classical scaling) of a distance matrix (Gower 1966), including two correction methods for negative eigenvalues. See pcoa for further details.
+
+Lets visualize the betadiversity using the most common distance metric Bray-Curtis and PCoA (MDS) ordination.
+
+```{r}
+# generate distance metrics: (MDS (“PCoA”) on Bray-Curtis)
+ord_ps_2_bray <- ordinate(ps_2, "MDS", "bray")
+
+# generate the plot
+p1_bray <- plot_ordination(ps_2, ord_ps_2_bray, type="samples", 
+                           color="Sample_Type", title="Samples",
+                           axes = 1:2, shape = NULL) +
+  geom_point(size=3)
+print(p1_bray)
+```
+
+```{r}
+## generate a 3D plot:
+# Extract ordination scores
+ord_scores_bray <- as.data.frame(ord_ps_2_bray$vectors)
+
+# Add metadata to the scores
+ord_scores_bray$Sample_Type <- sample_data(ps_2)$Sample_Type
+
+# collect only the first 3 Axis and variable of interest (Sample_Type):
+ord_scores_bray_3d <- ord_scores_bray[, c("Axis.1", "Axis.2", "Axis.3", "Sample_Type")]
+colnames(ord_scores_bray_3d)[1:3] <- c("PCoA1", "PCoA2", "PCoA3")
+
+p <- plot_ly(data = ord_scores_bray_3d, 
+             x = ~PCoA1, y = ~PCoA2, z = ~PCoA3, 
+             color = ~Sample_Type,
+             type = "scatter3d", 
+             mode = "markers")
+p <- p %>% layout(scene = list(xaxis = list(title = 'PCoA1'),
+                               yaxis = list(title = 'PCoA2'),
+                               zaxis = list(title = 'PCoA3')),
+                  title = "3D Bray-Curtis Ordination")
+p
+```
+
+```{r}
+# calculate and generate multiple plots using one distance metrics (bray-curtis) and 
+# multiple methods: 
+dist = "bray"
+ord_meths = c("DCA", "CCA", "RDA", "MDS")
+plist = llply(as.list(ord_meths), function(i, physeq, dist){
+  ordi = ordinate(physeq, method=i, distance=dist)
+  plot_ordination(physeq, ordi, type="samples", color="Sample_Type")
+}, ps_2, dist)
+
+names(plist) <- ord_meths
+pdataframe = ldply(plist, function(x){
+  df = x$data[, 1:2]
+  colnames(df) = c("Axis_1", "Axis_2")
+  return(cbind(df, x$data))
+})
+names(pdataframe)[1] = "method"
+
+p = ggplot(pdataframe, aes(Axis_1, Axis_2, color=Sample_Type))
+p = p + geom_point(size=3)
+p = p + facet_wrap(~method, scales="free")
+p
+
+# look at each one:
+plist[[4]]  
+
+################################################################################
+# MDS (“PCoA”) on weighted Unifrac Distances:
+ord_ps_2_WUni <- ordinate(ps_2, "PCoA", "unifrac", weighted=TRUE)
+plot_ordination(ps_2, ord_ps_2_WUni, color="Sample_Type", shape=NULL)
+
+# biplots for both samples and taxas:
+plot_ordination(ps_2, ord_ps_2_WUni, type="biplot", color="Phylum", shape="Sample_Type")
+
+# splited plots for samples and taxa:
+plot_ordination(ps_2, ord_ps_2_WUni, type="split", color="Phylum", shape="Sample_Type")
+```
+
+It is bad practice to include the outcome in a constrained ordination. Due to the high dimensionality of the data there is usually some hyperplane that can seperate groups very well, even though no significant difference exists.
+
+```{r}
+ord <- ordinate(ps_2, method = "RDA", formula = ~Sample_Type, distance = "bray")
+plot_ordination(physeq = ps_2, ordination = ord, color="Sample_Type")
+```
+
+However, if we shuffle our parameter we can still obtain good seperation even though the association is now complete random.
+
+```{r}
+ps_2@sam_data$Sample_Type_shuffle <- sample(ps_2@sam_data$Sample_Type)
+ord <- ordinate(ps_2, method = "RDA", formula = ~Sample_Type_shuffle, distance = "bray")
+plot_ordination(physeq = ps_2, ordination = ord, color="Sample_Type_shuffle")
+```
+
+# PERMANOVA (Permutational Multivariate Analysis of Variance)
+
+PERMANOVA uses distance matrices calculated from beta diversity measures (e.g., Bray-Curtis, Jaccard, UniFrac) as input. PERMANOVA can incorporate multiple explanatory variables and their interactions. So confounders can be considered. PERMANOVA is a non-parametric test, meaning it doesn't assume normal distribution of the data.
+
+```{r}
+# PERMANOVA using Bray-Curtis (method="bray") distance metrics
+permanova1 <- adonis2(ps_2@otu_table ~ ps_2@sam_data [["Sample_Type"]], 
+                      permutations=999, method = "bray")
+permanova1
+
+#permanova1_adj <- adonis2(ps_2@otu_table ~ ps_2@sam_data [["Sample_Type"]] +
+#                          ps_2@sam_data [["Age"]] +
+#                          ps_2@sam_data [["Host_Sex"]], permutations=999,
+#                          method = "bray")
+
+permanova1_adj <- adonis2(ps_2@otu_table ~ ps_2@sam_data [["Age"]] +
+                          ps_2@sam_data [["Host_Sex"]] +
+                          ps_2@sam_data [["Sample_Type"]], permutations=999,
+                          method = "bray")
+permanova1_adj
+```
+
+**Attention**: the order of covariates matter because the covariates' order can change the proportion of the variation that a variable can have on the microbiome composition.
+
+It is recommended to put your variable of interest at the **end of the formula**. 
+This way variance that is associated with confounders is attributed to these rather the variable of interest. 
+
+# Differential abundance analysis
+
+Determining differential abundance of microbes might seem trivial, but results show that outcomes of these analysis can be very stochastic and spurious depending on the methods  used r [Langille](https://www.nature.com/articles/s41467-022-28034-z) [Lahti](https://arxiv.org/pdf/2404.02691).
+
+## ANCOMBC
+
+**Analysis of Compositions of Microbiomes with Bias Correction (ANCOM-BC2)**
+
+ANCOMBC2() from ANCOMBC package can run on different Taxonomy levels (Phylum, Family, Genus, etc)
+
+ANCOM-BC can handle multiple covariates and multiple test correction. Hence it is possible to add confounders as covariates in the formula.
+
+```{r}
+# Phylum level
+ancom1 = ancombc(data = ps_2, assay_name = "counts", 
+              tax_level = "Phylum", phyloseq = NULL, 
+              formula = "Age + Host_Sex + Sample_Type", 
+              p_adj_method = "BH", prv_cut = 0.10, lib_cut = 1000, 
+              group = "Sample_Type", struc_zero = TRUE, neg_lb = TRUE, tol = 1e-5, 
+              max_iter = 100, conserve = TRUE, alpha = 0.05, global = TRUE,
+              n_cl = 1, verbose = TRUE)
+#ancom1[["res"]]
+
+# is there any phylum differ between the groups?
+ancom1[["res"]]$diff_abn$taxon [ancom1[["res"]]$diff_abn$Sample_Type==TRUE]
+
+# Family level
+ancom2 = ancombc(data = ps_2, assay_name = "counts", 
+              tax_level = "Family", phyloseq = NULL, 
+              formula = "Age + Host_Sex + Sample_Type", 
+              p_adj_method = "BH", prv_cut = 0.10, lib_cut = 1000, 
+              group = "Sample_Type", struc_zero = TRUE, neg_lb = TRUE, tol = 1e-5, 
+              max_iter = 100, conserve = TRUE, alpha = 0.05, global = TRUE,
+              n_cl = 1, verbose = TRUE)
+#ancom2[["res"]]
+
+# is there any family differ between the groups?
+ancom2[["res"]]$diff_abn$taxon [ancom2[["res"]]$diff_abn$Sample_Type==TRUE]
+
+# generating relative abundances:
+ps_2_RA <- transform_sample_counts(ps_2, function(x) x/sum(x) * 100)
+
+# Relative abundance Enterococcaceae family:
+ps_2_Streptococcaceae = subset_taxa(ps_2_RA, Family == "Streptococcaceae")
+plot_abundance = function(physeq,title = "",Facet = "Family", Color = "Family"){
+ mphyseq = psmelt(physeq)
+mphyseq <- subset(mphyseq, Abundance > -1)
+  ggplot(data = mphyseq, mapping = aes_string(x = "Sample_Type",y = "Abundance",
+                                              color = Color, fill = Color)) +
+    geom_violin(fill = NA) +
+    geom_boxplot(fill=NA, width = 0.1) +
+    geom_point(size = 5, alpha = 0.3,
+               position = position_jitter(width = 0.3)) +
+    facet_wrap(facets = Facet) + 
+    scale_y_log10()+
+    theme(legend.position="none")
+}
+plot_abundance(ps_2_Streptococcaceae,"") 
+  
+# Genus level
+ancom3 = ancombc(data = ps_2, assay_name = "counts", 
+              tax_level = "Genus", phyloseq = NULL, 
+              formula = "Age + Host_Sex + Sample_Type", 
+              p_adj_method = "BH", prv_cut = 0.10, lib_cut = 1000, 
+              group = "Sample_Type", struc_zero = TRUE, neg_lb = TRUE, tol = 1e-5, 
+              max_iter = 100, conserve = TRUE, alpha = 0.05, global = TRUE,
+              n_cl = 1, verbose = TRUE)
+#ancom3[["res"]]
+
+# is there any genus differ between the groups?
+ancom3[["res"]]$diff_abn$taxon [ancom3[["res"]]$diff_abn$Sample_Type==TRUE]
+
+# Relative abundance Enterococcus genus:
+ps_2_Mitsuokella = subset_taxa(ps_2_RA, Genus == "Mitsuokella")
+plot_abundance = function(physeq,title = "",Facet = "Genus", Color = "Genus"){
+ mphyseq = psmelt(physeq)
+mphyseq <- subset(mphyseq, Abundance > -1)
+  ggplot(data = mphyseq, mapping = aes_string(x = "Sample_Type",y = "Abundance",
+                                              color = Color, fill = Color)) +
+    geom_violin(fill = NA) +
+    geom_boxplot(fill=NA, width = 0.1) +
+    geom_point(size = 5, alpha = 0.3,
+               position = position_jitter(width = 0.3)) +
+    facet_wrap(facets = Facet) + scale_y_log10()+
+    theme(legend.position="none")
+}
+plot_abundance(ps_2_Mitsuokella,"") 
+
+# Relative abundance Enterococcus genus:
+ps_2_Atopobium = subset_taxa(ps_2_RA, Genus == "Shuttleworthia")
+plot_abundance(ps_2_Atopobium,"") 
+
+# Relative abundance Enterococcus genus:
+ps_2_Tyzzerella_4 = subset_taxa(ps_2_RA, Genus == "Sellimonas")
+plot_abundance(ps_2_Tyzzerella_4,"") 
+
+# Relative abundance Enterococcus genus:
+ps_2_Peptostreptococcus = subset_taxa(ps_2_RA, Genus == "Fournierella")
+plot_abundance(ps_2_Peptostreptococcus,"") 
+
+# Relative abundance Enterococcus genus:
+ps_2_Lactonifactor = subset_taxa(ps_2_RA, Genus == "Ruminococcaceae_UCG-008")
+plot_abundance(ps_2_Lactonifactor,"") 
+```
+
+# Repeated Measures
+
+When dealing with more complex designs we need to account for nesting of samples. In this dataset when we want to compare the changes over time we need to account for the pairing of samples from each of the subjects. For univariate testing you could use paired tests like t.test or wilcoxon. However to allow for more complex designs we will use linear mixed models. 
+
+```{r}
+ps_paired <- prune_samples(ps@sam_data$Sample_Type!="Donor", ps)
+ps_paired <- rarefy_even_depth(ps_paired)
+```
+
+## Alpha Diversity
+
+```{r}
+df.ad <- cbind(estimate_richness(ps_paired, measures = c("Observed","Shannon")), ps_paired@sam_data %>% data.frame())
+df.ad$FPD <- picante::pd(samp = as.matrix(unclass(otu_table(ps_paired))), tree = phy_tree(ps_paired), include.root = F)[gsub("X","",rownames(df.ad)),"PD"]
+df.ad.long <- df.ad %>% pivot_longer(cols = c("Shannon","Observed","FPD"), names_to = "Diversity_metric", values_to = "Diversity")
+
+diversity_names <- c(
+  `Observed` = "Observed",
+  `Shannon` = "Shannon",
+  `FPD` = "Phylogenetic Diversity")
+
+p.adiv.f20 <- ggplot(df.ad.long, aes(x=Time_Point, y=Diversity, group=Sample_Type, color=Sample_Type)) + 
+  #geom_boxplot(outlier.colour = NA, aes(group=Time_Point)) + 
+  ggbeeswarm::geom_beeswarm(size=2, cex = 1,priority = "random") + 
+  #facet_grid(variable~Host_Body_Site, scale="free_y", labeller = as_labeller(diversity_names)) +
+  facet_grid(Diversity_metric~., scale="free_y") +
+  scale_colour_viridis_d(option = "B", begin = 0.25, end = 0.75) + 
+  #scale_fill_viridis_d(option = "B", begin = 0.25, end = 0.75, alpha = 1) + 
+  geom_line(aes(group=Subject_ID), alpha=0.2) + 
+  labs(x=NULL,y=NULL)  + 
+  theme_bw() + 
+  geom_smooth(method = "lm") + 
+  stat_cor() + 
+  #geom_line(aes(group=Subject_ID), color="black") + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+  #stat_compare_means() + 
+  NULL; plot(p.adiv.f20)
+```
+
+```{r}
+summary(lmer(Shannon~Sample_Type + (1 | Subject_ID), df.ad))
+summary(lmer(Observed~Sample_Type + (1 | Subject_ID), df.ad))
+summary(lmer(FPD~Sample_Type + (1 | Subject_ID), df.ad))
+```
+
+## Beta diversity
+
+We can account for the inter individual variance by what is called multilevel PCA.
+This allows us to only focus on the variance over the two time points.
+
+```{r}
+diverse.pca = pca(ps_paired@otu_table+1, ncomp = 10, logratio = 'CLR', multilevel = ps_paired@sam_data$Subject_ID)
+plot(diverse.pca)
+
+time="Time_Point"
+var="Sample_Type"
+x="PC1" # first component
+y="PC2" # second component
+
+#build df
+variates <- diverse.pca$variates$X
+df <- data.frame(row.names = rownames(variates),
+                 variates,
+                 ps_paired@sam_data[rownames(variates),])
+
+# include centroids
+df$PTV_TP <- paste0(df[,var],df[,time])
+centroids <- aggregate(variates~PTV_TP,data=df,mean)
+df <- merge(df,centroids,by="PTV_TP",suffixes=c("",".centroid"))
+
+# plot
+p.multi.pca <- ggplot(df, aes_string(x=x, y=y, color=var, shape=time)) +
+  geom_segment(aes_string(x=paste0(x,".centroid"), y=paste0(y,".centroid"), xend=x, yend=y), alpha=0.3, color="black") +
+  #  scale_color_viridis_d(option = "C", end = 0.75) +
+  scale_color_manual(values = RColorBrewer::brewer.pal(n = 5, name = "Set1")) + 
+  theme_bw() +
+  labs(x=paste0(x,": ",round(diverse.pca$prop_expl_var$X[x], 3)*100, "% variance explained"),
+       y=paste0(y,": ",round(diverse.pca$prop_expl_var$X[y], 3)*100, "% variance explained"),
+       title="Multilevel PCA") +
+  #facet_wrap(~Time_Point) + 
+  geom_point(size=3) +
+  ggrepel::geom_text_repel(aes(label=Subject_ID)) + 
+  NULL; plot(p.multi.pca)
+
+df <- data.frame(row.names = rownames(variates),
+                 variates,
+                 ps_paired@sam_data[rownames(variates),])
+
+summary(manova(variates[,1:2]~df$Time_Point*df$Sample_Type))
+summary(aov(variates~df$Time_Point*df$Sample_Type))
+```
+
+We also can account for it in the permanova by using the stata argument
+
+```{r}
+d <- phyloseq::distance(ps_paired, "bray")
+adonis2(d ~ ps_paired@sam_data$Sample_Type, strata = ps_paired@sam_data$Subject_ID)
+```
+
+## Taxa
+
+We again can use lmer to test differences in taxa abundance. Note due to multiple testing burden it is recommended to reduced the set of taxa that get tested. Here we will only test the top 100 most abundant taxa.
+
+```{r}
+lmerres <- function(asv, ps){
+  psm <- psmelt(prune_taxa(asv, ps))
+  lmerTest::lmer(Abundance ~ Sample_Type + (1|Subject_ID), psm)
+}
+
+taxa <- taxa_sums(ps_paired) %>% sort(decreasing = T) %>% head(250) %>% names()
+
+asv_lmermodels <- lapply(taxa, function(x) lmerres(x, ps_paired))
+
+df <- data.frame(taxa=taxa,
+                 pvals = unlist(lapply(asv_lmermodels, function(x) coefficients(summary(x))[2,5])),
+                 ps_paired@tax_table[taxa,]
+)
+
+df$padj <- p.adjust(df$pvals, method = "fdr")
+df[df$padj<0.05,]
+```
+
+```{r}
+asv <- df[df$padj<0.05,] %>% rownames()
+psm <- psmelt(prune_taxa(asv, ps_paired))
+ggplot(psm, aes(x=Sample_Type, y=Abundance)) +
+  ggbeeswarm::geom_beeswarm() +
+  geom_boxplot() + 
+  facet_wrap(~OTU+Genus, scales="free") 
+```
+
+# Comparing microbiome of patients to the donor
+
+To test if there is any engraftment of species we can test if the distance of the patients is reduced after FMT.
+
+```{r}
+ps_rare <- rarefy_even_depth(ps)
+d <- distance(ps_rare, "jaccard", binary=T)
+vegan::adonis2(d~ps_rare@sam_data$Sample_Type)
+
+df <- reshape2::melt(as.matrix(d)) # we convert the matrix to long format (each index becomes a row)
+
+df$Var1_Donor_ID <- ps_rare@sam_data[df$Var1,]$Donor_Sample_ID
+df$Var2_Donor_ID <- ps_rare@sam_data[df$Var2,]$Donor_Sample_ID
+
+df$Var1_Sample_Type <- ps_rare@sam_data[df$Var1,]$Sample_Type
+df$Var2_Sample_Type <- ps_rare@sam_data[df$Var2,]$Sample_Type
+
+df <- df[df$Var1_Sample_Type!="Donor",] # We only want to compare distance between recipient/donors
+df <- df[df$Var2_Sample_Type=="Donor",]
+
+df$Donor_match <- df$Var1_Donor_ID==df$Var2_Donor_ID # check if the comparison is within or between
+
+ggplot(df, aes(x=Donor_match, y=value)) +
+  facet_wrap(~Var1_Sample_Type) + 
+  geom_jitter() +
+  stat_compare_means() + 
+  NULL
+```
+
+# Including clinical outcomes
+
+```{r}
+```
